@@ -1,0 +1,23 @@
+# Standalone workspace: this crate lives in its own git repository and is consumed as a
+# submodule, so it must build on its own without a parent workspace.
+[workspace]
+
+[package]
+name = "empower-rs-utils"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Shared utilities for EmpowerOps Rust projects: semicolon-CSV reporting and an FFI locking context."
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+default = ["report"]
+# Semicolon-CSV table machinery. No FFI dependencies, so a benchmark harness can take
+# this without linking anything it will never call.
+report = []
+# The FFI locking context. Only consumers with a C boundary need this.
+ffi = []
+
+[dependencies]
