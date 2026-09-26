@@ -18,7 +18,7 @@
 pub mod report;
 
 #[cfg(feature = "ffi")]
-pub mod ffi_context;
+pub mod ffi;
 
 /// Force-resolve `$path` (a compile error if it does not exist), then return just the final
 /// identifier as a `&'static str`.

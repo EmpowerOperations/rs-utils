@@ -1,0 +1,11 @@
+# Cargo build output
+/target/
+
+# rustfmt backups
+**/*.rs.bk
+
+# MSVC debug symbols, if a build ever drops them outside target/
+*.pdb
+
+# Cargo.lock is deliberately NOT ignored: current Cargo guidance is to commit it for
+# libraries too, so CI and bisects build against the same dependency versions.

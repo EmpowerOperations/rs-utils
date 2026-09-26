@@ -12,14 +12,18 @@ Two feature-gated modules, so a consumer takes only what it uses:
 | module | feature | what |
 |---|---|---|
 | `report` | `report` *(default)* | Semicolon-CSV tables: fixed-width, Excel-friendly, upsert or append. |
-| `ffi_context` | `ffi` | `LockingContext` — thread-identity-checked state for a C boundary. |
+| `ffi` | `ffi` | `HandleStore`, `AbiThreadMarshaller<T>`, `PointerRegistry` — state behind a C boundary. |
 
 ```toml
 # a benchmark harness, no FFI machinery linked
-empower-rs-utils = { path = "../utils" }
+empower-rs-utils = { git = "https://github.com/EmpowerOperations/rs-utils", rev = "..." }
 
 # an FFI crate, no CSV machinery linked
-empower-rs-utils = { path = "../utils", default-features = false, features = ["ffi"] }
+empower-rs-utils = { git = "https://github.com/EmpowerOperations/rs-utils", rev = "...", default-features = false, features = ["ffi"] }
+
+# workspace root, to build against a local submodule checkout instead
+[patch."https://github.com/EmpowerOperations/rs-utils"]
+empower-rs-utils = { path = "utils" }
 ```
 
 ### Biggest by volume: the reporting
@@ -29,16 +33,23 @@ magnitude-bucketed float formatter, the upsert-or-append reconciliation. It arri
 it was the most obviously duplicated: `format_float` had independently grown **byte-identical** in
 surro and artemis, which is about as clear a signal as de-duplication ever gives you.
 
-### Probably most valuable: `LockingContext`
+### Probably most valuable: the `ffi` module
 
-The reporting saves typing. `LockingContext` saves a class of bug that is genuinely hard to find.
+The reporting saves typing. The `ffi` module saves a class of bug that is genuinely hard to find.
 
-It gates access to state that crosses a C ABI, where Rust's `Send`/`Sync` checking cannot help:
-the boundary reconstructs a context pointer independently on every call, so nothing stops a
-misbehaving C caller handing it to a different thread. `Direct` catches that at runtime via a
-thread fingerprint; `Marshaled` sidesteps it by giving the state its own worker thread. Handles
-into its typed store are `LockingContextKey<T>` — a tagged `u64` that stays `Copy`/`Send` even
-when `T` is neither.
+Two separate jobs, composed by the consumer:
+
+* **`HandleStore`** turns integer handles a C caller holds into owned Rust values. `Handle<T>` is
+  a tagged `u64` that stays `Copy`/`Send` even when `T` is neither. Pure data, no threading.
+* **`AbiThreadMarshaller<T>`** keeps a `T` on one thread, where Rust's `Send`/`Sync` checking
+  cannot help: the boundary reconstructs a context pointer independently on every call, so nothing
+  stops a C caller handing it to a different thread. `ThreadStrategy::Direct` catches that at
+  runtime via a thread fingerprint; `ThreadStrategy::Marshalled` sidesteps it by giving `T` a
+  worker thread of its own. `T` is built by an init closure *on* its owning thread, so it need not
+  be `Send`.
+
+A consumer's per-context state is typically `struct State { handles: HandleStore, ... }` with
+anything else it needs (a licensor, say) alongside, owned by an `AbiThreadMarshaller<State>`.
 
 Four projects will each need this, and each would otherwise write a subtly different version.
 
@@ -83,13 +94,15 @@ twice — directly, and through surro — and would compile **two separate copie
 That is not cosmetic:
 
 * `CSV_WRITE_LOCK` is a crate-level `static`. Two copies, two mutexes, no mutual exclusion.
-* Worse: `LockingContextKey<T>` crosses the C boundary as a raw `u64`. Inside Rust the type
+* Worse: `Handle<T>` crosses the C boundary as a raw `u64`. Inside Rust the type
   system keeps two copies' keys apart; **across FFI the type is erased**, so a key minted by one
   copy and consumed by the other compiles cleanly and misbehaves at runtime — precisely where the
   type safety was supposed to be doing the work.
 
-**Before a second consumer adopts this crate**, make both resolve to one copy: a workspace
-`[patch]`, or have both reference the same git URL. See `AGENTS.md`.
+So every consumer depends on this crate by its **git URL**, never by `path`, and a workspace that
+wants a local checkout patches that URL at its root (above). A `path` dependency inside a git
+dependency belongs to that git repository's source, so no patch from outside can reach it. Check
+with `cargo tree -i empower-rs-utils`: exactly one entry.
 
 ## Building
 
