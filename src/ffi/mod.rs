@@ -11,6 +11,6 @@ pub mod handles;
 pub mod marshal;
 pub mod pointer_registry;
 
-pub use handles::{Handle, HandleStore};
+pub use handles::{Handle, HandleStore, WrongKind};
 pub use marshal::{AbiThreadMarshaller, SendMutPtr, SendPtr, ThreadFingerprint, ThreadStrategy, WrongThreadError};
 pub use pointer_registry::PointerRegistry;

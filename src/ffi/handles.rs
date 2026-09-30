@@ -102,6 +102,23 @@ impl HandleStore {
         Some(boxed.downcast_ref::<T>().unwrap_or_else(|| wrong_type_panic::<T>(handle.id)))
     }
 
+    /// `get`, but a handle of the wrong kind is an `Err` rather than a panic.
+    ///
+    /// For a C boundary: there a handle arrives as a bare `u64`, so a caller swapping one kind for
+    /// another is reachable from ordinary (if mistaken) C code, and should come back as a status,
+    /// not abort the host process. `Ok(None)` is what `get`'s `None` is: id `0`, never issued, or
+    /// already `take`n.
+    ///
+    /// # Errors
+    /// [`WrongKind`] if `handle`'s id is tracked but holds something other than a `T`.
+    pub fn try_get<T: Any>(&self, handle: Handle<T>) -> Result<Option<&T>, WrongKind> {
+        if handle.id == 0 {
+            return Ok(None);
+        }
+        let Some(boxed) = self.values.get(&handle.id) else { return Ok(None) };
+        boxed.downcast_ref::<T>().map(Some).ok_or(WrongKind { id: handle.id, expected: std::any::type_name::<T>() })
+    }
+
     /// Mutable counterpart to `get`; same `None`/panic semantics.
     pub fn get_mut<T: Any>(&mut self, handle: Handle<T>) -> Option<&mut T> {
         if handle.id == 0 {
@@ -128,6 +145,24 @@ impl HandleStore {
         }))
     }
 }
+
+/// A handle whose id is tracked but holds a value of another type: a raw id minted for one
+/// resource kind, handed back as another. [`HandleStore::try_get`] returns this where
+/// [`HandleStore::get`] panics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WrongKind {
+    pub id: u64,
+    /// `std::any::type_name` of the type the handle claimed; for messages, not for matching.
+    pub expected: &'static str,
+}
+
+impl std::fmt::Display for WrongKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "id {} does not hold a {} -- it was issued for a different kind of value", self.id, self.expected)
+    }
+}
+
+impl std::error::Error for WrongKind {}
 
 fn wrong_type_panic<T>(id: u64) -> ! {
     panic!(
@@ -172,6 +207,50 @@ mod tests {
         // assert
         assert_eq!(zero, None);
         assert_eq!(unknown, None);
+    }
+
+    #[test]
+    fn when_try_get_is_given_a_handle_of_its_own_type_should_return_the_value() {
+        // setup
+        let mut store = HandleStore::new();
+        let handle = store.insert(42u32);
+
+        // act
+        let found = store.try_get(handle).map(|value| value.copied());
+
+        // assert
+        assert_eq!(found, Ok(Some(42)));
+    }
+
+    #[test]
+    fn when_try_get_is_given_id_zero_or_an_unknown_id_should_return_ok_none() {
+        // setup
+        let mut store = HandleStore::new();
+        let _ = store.insert(1u32); // just to move next_id off zero
+
+        // act
+        let zero = store.try_get(Handle::<u32>::from_raw(0)).map(|value| value.copied());
+        let unknown = store.try_get(Handle::<u32>::from_raw(999)).map(|value| value.copied());
+
+        // assert
+        assert_eq!(zero, Ok(None));
+        assert_eq!(unknown, Ok(None));
+    }
+
+    #[test]
+    fn when_try_get_is_given_a_handle_of_the_wrong_type_should_return_wrong_kind() {
+        // setup
+        let mut store = HandleStore::new();
+        let handle = store.insert(42u32);
+        let mismatched: Handle<String> = Handle::from_raw(handle.into_raw());
+
+        // act
+        let found = store.try_get(mismatched);
+
+        // assert
+        assert_eq!(found, Err(WrongKind { id: handle.into_raw(), expected: std::any::type_name::<String>() }));
+        // A refused lookup changes nothing: the value is still there under its own type.
+        assert_eq!(store.get(handle).copied(), Some(42));
     }
 
     #[test]
