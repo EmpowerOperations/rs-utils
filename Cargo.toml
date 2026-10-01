@@ -6,6 +6,7 @@
 name = "empower-rs-utils"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
 publish = false
 description = "Shared utilities for EmpowerOps Rust projects: semicolon-CSV reporting and an FFI locking context."
 

@@ -105,61 +105,6 @@ wants a local checkout patches that URL at its root (above). A `path` dependency
 dependency belongs to that git repository's source, so no patch from outside can reach it. Check
 with `cargo tree -i empower-rs-utils`: exactly one entry.
 
-## Using it from GitHub Actions
-
-This repository is **private**, so a consumer's CI can't fetch it anonymously. Its workflow's own
-`GITHUB_TOKEN` can only read the consumer's repository. Access comes from the EmpowerOperations
-GitHub App **Submodule-Dependency-Access**, which has read-only access to repository contents.
-
-**Once per consuming repository:**
-
-1. **Install the app on this repository** (not on the consumer): org Settings → Developer
-   settings → GitHub Apps → the app → Install App → add `rs-utils`. It is already installed here;
-   the same app covers other private dependencies (e.g. `snorlax`) once they are added.
-2. **Give the consumer the app's credentials**, in its Settings → Secrets and variables → Actions,
-   or once at organisation level with the consumer granted access:
-   - variable `DEPS_APP_ID`: the app's ID, shown on its settings page;
-   - secret `DEPS_APP_PRIVATE_KEY`: a private key generated on the app's page (the whole `.pem`,
-     `BEGIN`/`END` lines included). Never a variable: variables are stored and shown as plain
-     text.
-   
-   Organisation-level secrets are not available to private repositories on GitHub's Free plan;
-   use a repository secret there.
-3. **In the workflow**, set this at workflow level so cargo fetches with the git CLI; its
-   built-in git client ignores the URL rewrite below:
-   ```yaml
-   env:
-     CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-   ```
-   Then, in every job that runs cargo, after `actions/checkout`:
-   ```yaml
-   - name: Mint deps token
-     id: deps-token
-     uses: actions/create-github-app-token@v2
-     with:
-       app-id: ${{ vars.DEPS_APP_ID }}
-       private-key: ${{ secrets.DEPS_APP_PRIVATE_KEY }}
-       owner: EmpowerOperations
-       repositories: rs-utils        # comma-separated: every private repo cargo fetches
-   - name: Route private git dependencies through the deps token
-     run: git config --global "url.https://x-access-token:${{ steps.deps-token.outputs.token }}@github.com/EmpowerOperations/.insteadOf" "https://github.com/EmpowerOperations/"
-   ```
-   The token is short-lived, read-only, and limited to the listed repositories.
-
-**Gotchas:**
-
-- **`insteadOf` is a case-sensitive prefix match.** Every dependency URL must spell the org
-  exactly `EmpowerOperations`. A URL spelled `empowerOperations` still works for GitHub itself but
-  silently misses the rewrite, and fails in CI with a credential prompt.
-- **"Mint deps token" fails:** the app ID variable or the private-key secret is missing or
-  misnamed, or the consumer isn't granted an organisation-level secret.
-- **Cargo gets a 404 or a credential prompt fetching this repository:** the app isn't installed on
-  it, the repository isn't in `repositories:`, or the URL's casing is off.
-- **Locally, nothing is needed:** cargo uses your own git credentials.
-
-Reference setup: hd-surrogates' `.github/workflows/build-surrogates-hd.yaml`. If this repository is
-ever made public, this section and those workflow steps can go.
-
 ## Building
 
 Standalone workspace, so it builds on its own as a submodule:
@@ -168,3 +113,7 @@ Standalone workspace, so it builds on its own as a submodule:
 cargo test --features ffi     # all modules
 cargo test                    # report only
 ```
+
+## License
+
+Apache-2.0; see `LICENSE`.
