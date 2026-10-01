@@ -8,19 +8,16 @@ follow.
 
 ## What's in it
 
-Two feature-gated modules, so a consumer takes only what it uses:
+Two modules, always both compiled: the crate is too small for cargo features to pay for
+themselves.
 
-| module | feature | what |
-|---|---|---|
-| `report` | `report` *(default)* | Semicolon-CSV tables: fixed-width, Excel-friendly, upsert or append. |
-| `ffi` | `ffi` | `HandleStore`, `AbiThreadMarshaller<T>`, `PointerRegistry` — state behind a C boundary. |
+| module | what |
+|---|---|
+| `report` | Semicolon-CSV tables: fixed-width, Excel-friendly, upsert or append. |
+| `ffi` | `HandleStore`, `AbiThreadMarshaller<T>`, `PointerRegistry` — state behind a C boundary. |
 
 ```toml
-# a benchmark harness, no FFI machinery linked
 empower-rs-utils = { git = "https://github.com/EmpowerOperations/rs-utils", rev = "..." }
-
-# an FFI crate, no CSV machinery linked
-empower-rs-utils = { git = "https://github.com/EmpowerOperations/rs-utils", rev = "...", default-features = false, features = ["ffi"] }
 
 # workspace root, to build against a local submodule checkout instead
 [patch."https://github.com/EmpowerOperations/rs-utils"]
@@ -110,8 +107,7 @@ with `cargo tree -i empower-rs-utils`: exactly one entry.
 Standalone workspace, so it builds on its own as a submodule:
 
 ```bash
-cargo test --features ffi     # all modules
-cargo test                    # report only
+cargo test
 ```
 
 ## License

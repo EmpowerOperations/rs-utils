@@ -14,10 +14,8 @@
 //! Where an operation could be a pure function, it is one. Filesystem access is confined to the
 //! few functions that exist to perform it.
 
-#[cfg(feature = "report")]
 pub mod report;
 
-#[cfg(feature = "ffi")]
 pub mod ffi;
 
 /// Force-resolve `$path` (a compile error if it does not exist), then return just the final

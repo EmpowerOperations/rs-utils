@@ -13,12 +13,4 @@ description = "Shared utilities for EmpowerOps Rust projects: semicolon-CSV repo
 [lib]
 crate-type = ["rlib"]
 
-[features]
-default = ["report"]
-# Semicolon-CSV table machinery. No FFI dependencies, so a benchmark harness can take
-# this without linking anything it will never call.
-report = []
-# The FFI locking context. Only consumers with a C boundary need this.
-ffi = []
-
 [dependencies]
