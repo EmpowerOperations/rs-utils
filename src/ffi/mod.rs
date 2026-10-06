@@ -14,8 +14,10 @@ pub mod handles;
 pub mod marshal;
 pub mod pointer_registry;
 pub mod shared_sequential;
+mod worker_pool;
 
 pub use handles::{Erase, Erased, Handle, HandleStore, HandleStoreOf, SendHandleStore, WrongKind};
 pub use marshal::{AbiThreadMarshaller, SendMutPtr, SendPtr, ThreadFingerprint, ThreadStrategy, WrongThreadError};
 pub use pointer_registry::PointerRegistry;
 pub use shared_sequential::SharedSequential;
+pub use worker_pool::{POOL_SIZE_VARIABLE, pool_size};

@@ -3,10 +3,13 @@
 //! This crate is a deliberately thin collection of helpers, not a framework. Two rules keep it
 //! from drifting into an inner platform:
 //!
-//! 1. **It resolves nothing.** No environment variables are read, no paths are derived, no
-//!    conventions about where output belongs are encoded. Callers pass `&Path` and the crate
-//!    writes there. Deciding *where* is the consuming project's business -- typically its own
-//!    `build.rs`, which stays that project's private concern.
+//! 1. **It resolves nothing.** No paths are derived, no conventions about where output belongs
+//!    are encoded. Callers pass `&Path` and the crate writes there. Deciding *where* is the
+//!    consuming project's business -- typically its own `build.rs`, which stays that project's
+//!    private concern. One environment variable is read, and only one:
+//!    `EMPOWEROPS_RS_UTILS_THREAD_POOL_SIZE`, the size of the process-wide pool behind
+//!    `ThreadStrategy::Marshalled`. That pool is shared by every library in the process that
+//!    uses this crate, so no one caller can be the one to size it; the operator does.
 //! 2. **It speaks in standard types.** `&Path`, `&[(&str, u8)]`, `HashMap<&str, String>`,
 //!    `impl Write`. Nothing here knows what a benchmark, a model or an optimizer is; each
 //!    consumer keeps its own column definitions and its own row-building code.

@@ -43,9 +43,14 @@ Two separate jobs, composed by the consumer:
 * **`AbiThreadMarshaller<T>`** keeps a `T` on one thread, where Rust's `Send`/`Sync` checking
   cannot help: the boundary reconstructs a context pointer independently on every call, so nothing
   stops a C caller handing it to a different thread. `ThreadStrategy::Direct` catches that at
-  runtime via a thread fingerprint; `ThreadStrategy::Marshalled` sidesteps it by giving `T` a
-  worker thread of its own. `T` is built by an init closure *on* its owning thread, so it need not
-  be `Send`.
+  runtime via a thread fingerprint; `ThreadStrategy::Marshalled` sidesteps it by pinning `T` to one
+  worker of a process-wide pool, which builds it, runs every call on it and drops it. `T` is built
+  by an init closure *on* its owning thread, so it need not be `Send`.
+
+  The pool has one worker per CPU, or `EMPOWEROPS_RS_UTILS_THREAD_POOL_SIZE` of them; a worker
+  starts with its first context and exits with its last, so threads stay bounded however many
+  contexts are alive. Contexts sharing a worker take turns, so a marshalled closure must never wait
+  on another marshalled call, which may be queued behind it: doing so from inside one panics.
 
 * **`SharedSequential<T: Send>`** is the simpler answer when the state is `Send`: a mutex, so any
   thread may call it, one call at a time, and drop it. The `Send` bound is checked where the state

@@ -3,14 +3,18 @@
 //! Rust's `Send`/`Sync` checking cannot follow a pointer through C: the boundary reconstructs a
 //! context independently on every call, so nothing stops a C caller handing it to another thread.
 //! [`AbiThreadMarshaller`] re-establishes the guarantee at runtime, either by checking the calling
-//! thread ([`ThreadStrategy::Direct`]) or by giving the state a thread of its own
+//! thread ([`ThreadStrategy::Direct`]) or by pinning the state to a pool worker
 //! ([`ThreadStrategy::Marshalled`]). The state itself may be `!Send`; this module never lets it be
-//! touched from anywhere else.
+//! touched from anywhere else. State that is `Send` needs none of this: see
+//! [`SharedSequential`](super::SharedSequential).
 
+use std::marker::PhantomData;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::mpsc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::thread;
+
+use super::worker_pool::{self, Pool, Worker, refuse_on_pool_worker};
 
 /// Wraps a raw pointer so it can be captured into a `marshal_execution`
 /// closure. That closure must be `Send` unconditionally -- even for a
@@ -136,16 +140,21 @@ pub enum ThreadStrategy {
     /// blocking call at a time on its own thread: it costs no more than a
     /// plain mutex.
     Direct,
-    /// A dedicated background thread owns the state outright;
-    /// `marshal_execution` ships each closure to it over a channel and blocks
-    /// for the result. Safe to call from any thread.
+    /// The state is pinned to one worker of a process-wide pool, which builds
+    /// it, owns it and runs every call on it; `marshal_execution` ships each
+    /// closure there and blocks for the result. Safe to call, and to drop,
+    /// from any thread.
+    ///
+    /// The pool has [`POOL_SIZE_VARIABLE`](super::POOL_SIZE_VARIABLE)
+    /// workers if that environment variable is set, else one per available CPU;
+    /// a worker starts when a context is first pinned to it and exits when its
+    /// last context is dropped. Contexts sharing a worker take turns, so a
+    /// closure must never wait on another marshalled call: that call may be
+    /// queued behind it on the same worker. Calling `marshal_execution` (or
+    /// making a `Marshalled` marshaller) from inside a marshalled closure
+    /// panics rather than risk that.
     Marshalled,
 }
-
-/// A job dispatched to a `Marshalled` marshaller's worker thread: does whatever
-/// it likes to the state, then reports its own result back over whatever
-/// channel it closed over -- `marshal_execution` is what actually constructs these.
-type Job<T> = Box<dyn FnOnce(&mut T) + Send>;
 
 enum Backend<T> {
     Direct {
@@ -153,17 +162,18 @@ enum Backend<T> {
         state: Mutex<T>,
     },
     Marshalled {
-        /// `None` only during/after `Drop` -- taken and dropped first (to
-        /// close the channel) so the worker's receive loop can end before
-        /// it's joined.
-        sender: Option<mpsc::Sender<Job<T>>>,
-        worker: Option<thread::JoinHandle<()>>,
+        /// The worker the state is pinned to. Holding it keeps the worker alive.
+        worker: Arc<Worker>,
+        /// The state's key in that worker's map.
+        id: u64,
+        /// The state's type, which lives on the worker, not here.
+        state: PhantomData<fn() -> T>,
     },
 }
 
 /// Owns a `T` and only ever lets it be touched from one thread at a time, and
 /// always the same one: for `Direct`, the thread that created the marshaller
-/// (checked on every call); for `Marshalled`, a worker thread of its own.
+/// (checked on every call); for `Marshalled`, the pool worker it is pinned to.
 ///
 /// `T` is built by the `init` closure given to [`new`](Self::new), *on* the
 /// thread that will own it, so `T` itself never has to be `Send`.
@@ -178,10 +188,11 @@ pub struct AbiThreadMarshaller<T> {
 // never actually touched from more than one thread: `Direct` enforces it via
 // `owner_thread`'s runtime check in `marshal_execution` (a misuse returns
 // `Err`, it doesn't race), and `Marshalled` by construction -- `T` is built
-// on, and only ever reached from, the one worker thread. The marshaller
-// *handle* itself (a `ThreadFingerprint`, a `Mutex`, an `mpsc::Sender`, a
-// `JoinHandle`) has nothing unsound about crossing threads; only the payload
-// behind the gate would be, and the gate is what prevents that.
+// on, only ever reached from, and dropped on the one pool worker it is pinned
+// to. The marshaller *handle* itself (a `ThreadFingerprint`, a `Mutex`, an
+// `Arc` of a worker's sender and an id) has nothing unsound about crossing
+// threads; only the payload behind the gate would be, and the gate is what
+// prevents that.
 //
 // The one path the gate does not cover is `Drop` of a `Direct` marshaller,
 // which drops `T` on whichever thread drops the marshaller. Callers that can
@@ -191,7 +202,8 @@ unsafe impl<T> Sync for AbiThreadMarshaller<T> {}
 
 impl<T: 'static> AbiThreadMarshaller<T> {
     /// Builds the state with `init` on the thread that will own it -- the
-    /// calling thread for `Direct`, a freshly spawned worker for `Marshalled`.
+    /// calling thread for `Direct`, its pool worker for `Marshalled` (waiting
+    /// for it there, so a panic in `init` reaches the caller).
     ///
     /// Anything the consumer needs alongside its handles -- a licensor, a
     /// config -- belongs in `T`, so this type stays ignorant of what any
@@ -202,18 +214,28 @@ impl<T: 'static> AbiThreadMarshaller<T> {
                 owner_thread: ThreadFingerprint::current(),
                 state: Mutex::new(init()),
             },
-            ThreadStrategy::Marshalled => {
-                let (sender, receiver) = mpsc::channel::<Job<T>>();
-                let worker = thread::spawn(move || {
-                    let mut state = init();
-                    for job in receiver {
-                        job(&mut state);
-                    }
-                });
-                Backend::Marshalled { sender: Some(sender), worker: Some(worker) }
-            }
+            ThreadStrategy::Marshalled => return Self::marshalled_in(Pool::global(), init),
         };
         Self { backend }
+    }
+
+    /// A `Marshalled` marshaller pinned to a worker of `pool`: the process-wide
+    /// pool in production, a private one in tests.
+    pub(crate) fn marshalled_in(pool: &Pool, init: impl FnOnce() -> T + Send + 'static) -> Self {
+        refuse_on_pool_worker("AbiThreadMarshaller::new");
+        let worker = pool.assign();
+        let id = worker_pool::next_context_id();
+        let (tx, rx) = mpsc::channel::<thread::Result<()>>();
+        worker.send(Box::new(move |states| {
+            let built = panic::catch_unwind(AssertUnwindSafe(init)).map(|state| {
+                states.insert(id, Box::new(state));
+            });
+            let _ = tx.send(built);
+        }));
+        match rx.recv().expect("AbiThreadMarshaller: worker thread dropped without responding") {
+            Ok(()) => Self { backend: Backend::Marshalled { worker, id, state: PhantomData } },
+            Err(payload) => panic::resume_unwind(payload),
+        }
     }
 
     /// `Err` if this is `Direct` and the calling thread is not its owner;
@@ -259,15 +281,17 @@ impl<T: 'static> AbiThreadMarshaller<T> {
                 let mut guard = state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                 Ok(f(&mut guard))
             }
-            Backend::Marshalled { sender, .. } => {
+            Backend::Marshalled { worker, id, .. } => {
+                refuse_on_pool_worker("marshal_execution");
+                let id = *id;
                 let (tx, rx) = mpsc::channel::<thread::Result<R>>();
-                sender
-                    .as_ref()
-                    .expect("AbiThreadMarshaller: marshal_execution called while being dropped")
-                    .send(Box::new(move |state: &mut T| {
-                        let _ = tx.send(panic::catch_unwind(AssertUnwindSafe(|| f(state))));
-                    }))
-                    .expect("AbiThreadMarshaller: worker thread is gone");
+                worker.send(Box::new(move |states| {
+                    let state = states
+                        .get_mut(&id)
+                        .and_then(|state| state.downcast_mut::<T>())
+                        .expect("AbiThreadMarshaller: a pinned context's state is missing from its worker");
+                    let _ = tx.send(panic::catch_unwind(AssertUnwindSafe(|| f(state))));
+                }));
                 match rx.recv().expect("AbiThreadMarshaller: worker thread dropped without responding") {
                     Ok(r) => Ok(r),
                     Err(payload) => panic::resume_unwind(payload),
@@ -278,16 +302,24 @@ impl<T: 'static> AbiThreadMarshaller<T> {
 }
 
 impl<T> Drop for AbiThreadMarshaller<T> {
+    /// For `Marshalled`, removes the state from its worker and drops it there, waiting until that is
+    /// done, so destruction is finished when this returns. A panic in the state's destructor is
+    /// contained on the worker, which carries on serving its other contexts.
+    ///
+    /// The one exception is a drop *on* a pool worker -- a state that owns another marshaller, say.
+    /// Waiting there could be waiting on the very worker doing the dropping, so the removal is queued
+    /// behind the current job instead, and runs as soon as it finishes.
     fn drop(&mut self) {
-        if let Backend::Marshalled { sender, worker } = &mut self.backend {
-            // Drop the sender first to close the channel, so the worker's
-            // `for job in receiver` loop actually ends -- otherwise the
-            // join below would hang forever waiting for a thread that's
-            // still blocked on an empty, open channel.
-            drop(sender.take());
-            if let Some(worker) = worker.take() {
-                let _ = worker.join();
-            }
+        let Backend::Marshalled { worker, id, .. } = &self.backend else { return };
+        let id = *id;
+        let (tx, rx) = mpsc::channel::<()>();
+        worker.send(Box::new(move |states| {
+            let removed = states.remove(&id);
+            let _ = panic::catch_unwind(AssertUnwindSafe(move || drop(removed)));
+            let _ = tx.send(());
+        }));
+        if !worker_pool::on_pool_worker() {
+            let _ = rx.recv();
         }
     }
 }
@@ -393,6 +425,120 @@ mod tests {
         // assert
         assert!(panicked, "the panic inside marshal_execution's closure must propagate");
         assert_eq!(afterwards.unwrap(), 7);
+    }
+
+    fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+        match payload.downcast::<String>() {
+            Ok(message) => *message,
+            Err(payload) => (*payload.downcast::<&str>().expect("a string panic payload")).to_owned(),
+        }
+    }
+
+    /// The point of the pool: however many contexts there are, they share its workers, spread
+    /// across all of them.
+    #[test]
+    fn when_many_contexts_are_marshalled_should_share_the_pools_workers() {
+        // setup
+        let pool = Pool::new(4);
+        let contexts: Vec<_> = (0..64).map(|n| AbiThreadMarshaller::marshalled_in(&pool, move || n)).collect();
+
+        // act
+        let threads: std::collections::HashSet<_> = contexts
+            .iter()
+            .map(|context| context.marshal_execution(|_| thread::current().id()).unwrap())
+            .collect();
+
+        // assert
+        assert_eq!(threads.len(), 4, "64 contexts on a pool of 4 must use exactly its 4 workers");
+        let values: Vec<u32> = contexts.iter().map(|context| context.marshal_execution(|n| *n).unwrap()).collect();
+        assert_eq!(values, (0..64).collect::<Vec<u32>>(), "each context keeps its own state");
+    }
+
+    /// Records the thread it is dropped on.
+    struct DropWitness {
+        dropped_on: Arc<Mutex<Option<thread::ThreadId>>>,
+    }
+
+    impl Drop for DropWitness {
+        fn drop(&mut self) {
+            *self.dropped_on.lock().unwrap() = Some(thread::current().id());
+        }
+    }
+
+    #[test]
+    fn when_a_marshalled_context_is_dropped_on_another_thread_should_drop_its_state_on_its_worker() {
+        // setup
+        let pool = Pool::new(2);
+        let dropped_on = Arc::new(Mutex::new(None));
+        let context = AbiThreadMarshaller::marshalled_in(&pool, {
+            let dropped_on = Arc::clone(&dropped_on);
+            move || DropWitness { dropped_on }
+        });
+        let worker = context.marshal_execution(|_| thread::current().id()).unwrap();
+
+        // act
+        thread::spawn(move || drop(context)).join().expect("dropping thread itself must not panic");
+
+        // assert
+        assert_eq!(*dropped_on.lock().unwrap(), Some(worker), "dropped on its worker, before drop returned");
+    }
+
+    #[test]
+    fn when_a_marshalled_closure_waits_on_another_marshalled_context_should_panic_instead_of_deadlocking() {
+        // setup
+        let pool = Pool::new(1);
+        let inner = Arc::new(AbiThreadMarshaller::marshalled_in(&pool, || 1u32));
+        let outer = AbiThreadMarshaller::marshalled_in(&pool, || 2u32);
+
+        // act
+        let payload = panic::catch_unwind(AssertUnwindSafe(|| {
+            outer.marshal_execution(move |_| inner.marshal_execution(|n| *n).unwrap()).unwrap()
+        }))
+        .expect_err("a nested marshalled call must panic");
+
+        // assert
+        assert_eq!(
+            panic_message(payload),
+            "AbiThreadMarshaller: marshal_execution called on a pool worker thread -- a marshalled job must not \
+             wait on marshalled work, which may be queued behind it on the same worker"
+        );
+        assert_eq!(outer.marshal_execution(|n| *n).unwrap(), 2, "the worker survives the refusal");
+    }
+
+    #[test]
+    fn when_a_workers_last_context_is_dropped_should_exit_the_worker() {
+        // setup
+        let pool = Pool::new(1);
+        let context = AbiThreadMarshaller::marshalled_in(&pool, || 0u32);
+        let worker = pool.take_thread(0).expect("the context started slot 0's worker");
+
+        // act
+        drop(context);
+
+        // assert
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !worker.is_finished() && std::time::Instant::now() < deadline {
+            thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(worker.is_finished(), "a worker with no contexts left must exit");
+    }
+
+    #[test]
+    fn when_a_marshalled_init_panics_should_propagate_and_leave_the_worker_serving() {
+        // setup
+        let pool = Pool::new(1);
+        let survivor = AbiThreadMarshaller::marshalled_in(&pool, || 5u32);
+
+        // act
+        let payload = panic::catch_unwind(AssertUnwindSafe(|| {
+            AbiThreadMarshaller::<u32>::marshalled_in(&pool, || panic!("simulated failure in init"))
+        }))
+        .err()
+        .expect("a panicking init must propagate");
+
+        // assert
+        assert_eq!(panic_message(payload), "simulated failure in init");
+        assert_eq!(survivor.marshal_execution(|n| *n).unwrap(), 5);
     }
 
     #[test]
