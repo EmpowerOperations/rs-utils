@@ -1,8 +1,10 @@
 //! Owned Rust values behind plain integer handles, for a C caller to hold.
 //!
-//! Pure data: nothing here knows about threads. What a store may hold is anything `'static`,
-//! including `!Send` values, which is why a store is normally kept inside an
-//! [`AbiThreadMarshaller`](super::AbiThreadMarshaller) rather than touched directly.
+//! Pure data: nothing here knows about threads. A [`HandleStore`] may hold anything `'static`,
+//! including `!Send` values, which is why it is normally kept inside an
+//! [`AbiThreadMarshaller`](super::AbiThreadMarshaller) rather than touched directly. A
+//! [`SendHandleStore`] holds only `Send` values and so is `Send` itself, for state kept in a
+//! [`SharedSequential`](super::SharedSequential).
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -54,16 +56,83 @@ impl<T> Handle<T> {
     }
 }
 
-pub struct HandleStore {
+/// Values of any `'static` type behind handles. Not `Send`, since it may hold `!Send` values.
+pub type HandleStore = HandleStoreOf<dyn Any>;
+
+/// Values of any `'static + Send` type behind handles, and so `Send` itself. Inserting a `!Send`
+/// value does not compile:
+///
+/// ```compile_fail
+/// use std::rc::Rc;
+/// use empower_rs_utils::ffi::SendHandleStore;
+///
+/// SendHandleStore::new().insert(Rc::new(1));
+/// ```
+///
+/// while the same value counted atomically does:
+///
+/// ```
+/// use std::sync::Arc;
+/// use empower_rs_utils::ffi::SendHandleStore;
+///
+/// SendHandleStore::new().insert(Arc::new(1));
+/// ```
+pub type SendHandleStore = HandleStoreOf<dyn Any + Send>;
+
+/// The store behind [`HandleStore`] and [`SendHandleStore`], generic over how its values are
+/// erased: `V` is `dyn Any` or `dyn Any + Send`, and the store is `Send` exactly when `V` is. Name
+/// it through those two aliases; it is generic only so the two share one implementation.
+pub struct HandleStoreOf<V: ?Sized + Erased> {
     next_id: u64,
-    values: HashMap<u64, Box<dyn Any>>,
+    values: HashMap<u64, Box<V>>,
 }
 
-impl Default for HandleStore {
+/// The erased types a store may hold its values as: `dyn Any` and `dyn Any + Send`. Sealed, so
+/// that list is the whole of it.
+pub trait Erased: sealed::Sealed + 'static {
+    fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+    fn into_any(self: Box<Self>) -> Box<dyn Any>;
+}
+
+/// How a value of type `Self` is boxed as a `V`: any `'static` type as `dyn Any`, a `Send` one
+/// also as `dyn Any + Send`. A store's `insert` requires it, so a `!Send` value cannot go into a
+/// `SendHandleStore`.
+pub trait Erase<V: ?Sized>: Any {
+    fn erase(self) -> Box<V>;
+}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for dyn std::any::Any {}
+    impl Sealed for dyn std::any::Any + Send {}
+}
+
+impl Erased for dyn Any {
+    fn as_any(&self) -> &dyn Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn Any { self }
+    fn into_any(self: Box<Self>) -> Box<dyn Any> { self }
+}
+
+impl Erased for dyn Any + Send {
+    fn as_any(&self) -> &dyn Any { self }
+    fn as_any_mut(&mut self) -> &mut dyn Any { self }
+    fn into_any(self: Box<Self>) -> Box<dyn Any> { self }
+}
+
+impl<T: Any> Erase<dyn Any> for T {
+    fn erase(self) -> Box<dyn Any> { Box::new(self) }
+}
+
+impl<T: Any + Send> Erase<dyn Any + Send> for T {
+    fn erase(self) -> Box<dyn Any + Send> { Box::new(self) }
+}
+
+impl<V: ?Sized + Erased> Default for HandleStoreOf<V> {
     fn default() -> Self { Self::new() }
 }
 
-impl HandleStore {
+impl<V: ?Sized + Erased> HandleStoreOf<V> {
     pub fn new() -> Self {
         Self {
             next_id: 1, // id 0 is reserved as empty
@@ -79,9 +148,9 @@ impl HandleStore {
 
     /// Stores `value` under a freshly allocated id and returns a typed handle
     /// to retrieve it later via `get`/`get_mut`/`take`.
-    pub fn insert<T: Any>(&mut self, value: T) -> Handle<T> {
+    pub fn insert<T: Erase<V>>(&mut self, value: T) -> Handle<T> {
         let id = self.next_id();
-        let prev = self.values.insert(id, Box::new(value));
+        let prev = self.values.insert(id, value.erase());
         assert!(prev.is_none(), "duplicate id {id}? next_id allocation bug");
         Handle::from_raw(id)
     }
@@ -99,7 +168,7 @@ impl HandleStore {
             return None;
         }
         let boxed = self.values.get(&handle.id)?;
-        Some(boxed.downcast_ref::<T>().unwrap_or_else(|| wrong_type_panic::<T>(handle.id)))
+        Some(boxed.as_any().downcast_ref::<T>().unwrap_or_else(|| wrong_type_panic::<T>(handle.id)))
     }
 
     /// `get`, but a handle of the wrong kind is an `Err` rather than a panic.
@@ -116,7 +185,7 @@ impl HandleStore {
             return Ok(None);
         }
         let Some(boxed) = self.values.get(&handle.id) else { return Ok(None) };
-        boxed.downcast_ref::<T>().map(Some).ok_or(WrongKind { id: handle.id, expected: std::any::type_name::<T>() })
+        boxed.as_any().downcast_ref::<T>().map(Some).ok_or(WrongKind { id: handle.id, expected: std::any::type_name::<T>() })
     }
 
     /// Mutable counterpart to `get`; same `None`/panic semantics.
@@ -125,7 +194,7 @@ impl HandleStore {
             return None;
         }
         let boxed = self.values.get_mut(&handle.id)?;
-        Some(boxed.downcast_mut::<T>().unwrap_or_else(|| wrong_type_panic::<T>(handle.id)))
+        Some(boxed.as_any_mut().downcast_mut::<T>().unwrap_or_else(|| wrong_type_panic::<T>(handle.id)))
     }
 
     /// Removes and returns the value under `handle`, releasing its slot.
@@ -136,11 +205,11 @@ impl HandleStore {
         if handle.id == 0 {
             return None;
         }
-        if !self.values.get(&handle.id)?.is::<T>() {
+        if !self.values.get(&handle.id)?.as_any().is::<T>() {
             wrong_type_panic::<T>(handle.id);
         }
         let boxed = self.values.remove(&handle.id)?;
-        Some(*boxed.downcast::<T>().unwrap_or_else(|_| {
+        Some(*boxed.into_any().downcast::<T>().unwrap_or_else(|_| {
             unreachable!("id {} held a {} a moment ago", handle.id, std::any::type_name::<T>())
         }))
     }
@@ -280,5 +349,58 @@ mod tests {
         // assert
         assert!(panicked, "a mismatched take must still panic");
         assert_eq!(store.get(handle).copied(), Some(42), "the value it hit must survive");
+    }
+
+    /// Fails to compile, rather than fails, if a `SendHandleStore` is ever not `Send`.
+    const _: () = {
+        const fn send<T: Send>() {}
+        send::<SendHandleStore>();
+    };
+
+    #[test]
+    fn when_a_send_store_is_used_should_round_trip_through_get_get_mut_and_take() {
+        // setup
+        let mut store = SendHandleStore::new();
+        let handle = store.insert(42u32);
+
+        // act
+        let first = store.get(handle).copied();
+        *store.get_mut(handle).unwrap() += 1;
+        let taken = store.take(handle);
+        let after_take = store.get(handle).copied();
+
+        // assert
+        assert_eq!(first, Some(42));
+        assert_eq!(taken, Some(43));
+        assert_eq!(after_take, None);
+    }
+
+    #[test]
+    fn when_a_send_store_is_given_a_handle_of_the_wrong_type_should_return_wrong_kind() {
+        // setup
+        let mut store = SendHandleStore::new();
+        let handle = store.insert(42u32);
+        let mismatched: Handle<String> = Handle::from_raw(handle.into_raw());
+
+        // act
+        let found = store.try_get(mismatched);
+
+        // assert
+        assert_eq!(found, Err(WrongKind { id: handle.into_raw(), expected: std::any::type_name::<String>() }));
+    }
+
+    #[test]
+    fn when_a_send_store_moves_to_another_thread_should_serve_its_values_there() {
+        // setup
+        let mut store = SendHandleStore::new();
+        let handle = store.insert(String::from("kept"));
+
+        // act
+        let found = std::thread::spawn(move || store.get(handle).cloned())
+            .join()
+            .expect("the receiving thread itself must not panic");
+
+        // assert
+        assert_eq!(found.as_deref(), Some("kept"));
     }
 }

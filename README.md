@@ -39,6 +39,7 @@ Two separate jobs, composed by the consumer:
 
 * **`HandleStore`** turns integer handles a C caller holds into owned Rust values. `Handle<T>` is
   a tagged `u64` that stays `Copy`/`Send` even when `T` is neither. Pure data, no threading.
+  `SendHandleStore` is the same for `Send` values only, and so is `Send` itself.
 * **`AbiThreadMarshaller<T>`** keeps a `T` on one thread, where Rust's `Send`/`Sync` checking
   cannot help: the boundary reconstructs a context pointer independently on every call, so nothing
   stops a C caller handing it to a different thread. `ThreadStrategy::Direct` catches that at
@@ -46,8 +47,14 @@ Two separate jobs, composed by the consumer:
   worker thread of its own. `T` is built by an init closure *on* its owning thread, so it need not
   be `Send`.
 
+* **`SharedSequential<T: Send>`** is the simpler answer when the state is `Send`: a mutex, so any
+  thread may call it, one call at a time, and drop it. The `Send` bound is checked where the state
+  is wrapped, so the compiler, not a runtime check, keeps `!Send` values out.
+
 A consumer's per-context state is typically `struct State { handles: HandleStore, ... }` with
-anything else it needs (a licensor, say) alongside, owned by an `AbiThreadMarshaller<State>`.
+anything else it needs (a licensor, say) alongside, owned by an `AbiThreadMarshaller<State>`; or,
+when all of it is `Send`, `struct State { handles: SendHandleStore, ... }` in a
+`SharedSequential<State>`.
 
 Four projects will each need this, and each would otherwise write a subtly different version.
 
