@@ -9,3 +9,26 @@
 
 # Cargo.lock is deliberately NOT ignored: current Cargo guidance is to commit it for
 # libraries too, so CI and bisects build against the same dependency versions.
+
+# JetBrains (RustRover/IntelliJ): the shared .idea/ project files are tracked, the per-user and
+# high-churn ones are not. The IDE-relevant part of github/gitignore's Global/JetBrains.gitignore,
+# after https://intellij-support.jetbrains.com/hc/en-us/articles/206544839 ; its Gradle, CMake,
+# Android and other plugin-specific entries are left out as irrelevant to a cargo project.
+.idea/**/workspace.xml
+.idea/**/tasks.xml
+.idea/**/usage.statistics.xml
+.idea/**/dictionaries
+.idea/**/shelf
+.idea/**/aws.xml
+.idea/**/contentModel.xml
+.idea/**/dataSources/
+.idea/**/dataSources.ids
+.idea/**/dataSources.local.xml
+.idea/**/sqlDataSources.xml
+.idea/**/dynamic.xml
+.idea/**/uiDesigner.xml
+.idea/**/dbnavigator.xml
+.idea/sonarlint/
+.idea/httpRequests
+.idea/caches/
+*.iws
