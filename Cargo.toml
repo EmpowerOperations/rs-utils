@@ -6,9 +6,17 @@
 name = "empower-rs-utils"
 version = "0.1.0"
 edition = "2024"
+# Lowest toolchain actually checked (`cargo +1.89.0 check --all-targets`); edition 2024 alone
+# would allow 1.85, but nothing below 1.89 has been tried.
+rust-version = "1.89"
 license = "Apache-2.0"
-publish = false
 description = "Shared utilities for EmpowerOps Rust projects: semicolon-CSV reporting and an FFI locking context."
+repository = "https://github.com/EmpowerOperations/rs-utils"
+readme = "README.md"
+keywords = ["ffi", "handles", "thread-affinity", "csv", "report"]
+categories = ["development-tools::ffi", "concurrency"]
+# IDE project files are tracked in git but are no use to a crate consumer.
+exclude = [".idea/"]
 
 [lib]
 crate-type = ["rlib"]

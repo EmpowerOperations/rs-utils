@@ -17,10 +17,11 @@ themselves.
 | `ffi` | `HandleStore`, `AbiThreadMarshaller<T>`, `PointerRegistry` — state behind a C boundary. |
 
 ```toml
-empower-rs-utils = { git = "https://github.com/EmpowerOperations/rs-utils", rev = "..." }
+[dependencies]
+empower-rs-utils = "0.1"
 
 # workspace root, to build against a local submodule checkout instead
-[patch."https://github.com/EmpowerOperations/rs-utils"]
+[patch.crates-io]
 empower-rs-utils = { path = "utils" }
 ```
 
@@ -97,9 +98,10 @@ summary file holds one row per version; a per-run sidecar holds ten. Both need r
 
 ## ⚠ If more than one dependency path reaches this crate
 
-Cargo unifies git dependencies by URL, but **`path` dependencies from different directories are
-different sources and do not unify.** Once surro also depends on this crate, artemis reaches it
-twice — directly, and through surro — and would compile **two separate copies**.
+Cargo unifies a dependency only when every path to it names the **same source and a
+semver-compatible version**. Once surro also depends on this crate, artemis reaches it twice —
+directly, and through surro — and compiles **two separate copies** if those two paths disagree:
+`0.1` against `0.2`, crates.io against git, or a `path` from two different directories.
 
 That is not cosmetic:
 
@@ -109,10 +111,10 @@ That is not cosmetic:
   copy and consumed by the other compiles cleanly and misbehaves at runtime — precisely where the
   type safety was supposed to be doing the work.
 
-So every consumer depends on this crate by its **git URL**, never by `path`, and a workspace that
-wants a local checkout patches that URL at its root (above). A `path` dependency inside a git
-dependency belongs to that git repository's source, so no patch from outside can reach it. Check
-with `cargo tree -i empower-rs-utils`: exactly one entry.
+So every consumer depends on this crate **from crates.io**, never by `path` or git URL, and keeps
+to one semver-compatible version across the tree. A workspace that wants a local checkout patches
+crates.io at its root (above), which reaches transitive dependents too. Check with
+`cargo tree -i empower-rs-utils`: exactly one entry.
 
 ## Building
 
