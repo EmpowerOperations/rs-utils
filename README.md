@@ -1,4 +1,4 @@
-# empower-rs-utils
+# empowerops-rs-utils
 
 Shared utilities for EmpowerOps Rust projects. Not a framework, not a platform â€” a small set of
 things that were already written twice and are cheaper to maintain once.
@@ -19,11 +19,11 @@ themselves.
 
 ```toml
 [dependencies]
-empower-rs-utils = "0.1"
+empowerops-rs-utils = "0.1"
 
 # workspace root, to build against a local submodule checkout instead
 [patch.crates-io]
-empower-rs-utils = { path = "utils" }
+empowerops-rs-utils = { path = "utils" }
 ```
 
 ### Biggest by volume: the reporting
@@ -81,7 +81,7 @@ Every function takes the file it should act on. **The crate resolves nothing** â
 variables, no derived paths. Where output belongs is the consuming project's business.
 
 ```rust
-use empower_rs_utils::report::{self, NameWidthPair, RowMap, format_float};
+use empowerops_rs_utils::report::{self, NameWidthPair, RowMap, format_float};
 
 const COLUMNS: &[NameWidthPair] = &[("version", 24), ("mean", 12), ("run-count", 10)];
 
@@ -125,7 +125,7 @@ That is not cosmetic:
 So every consumer depends on this crate **from crates.io**, never by `path` or git URL, and keeps
 to one semver-compatible version across the tree. A workspace that wants a local checkout patches
 crates.io at its root (above), which reaches transitive dependents too. Check with
-`cargo tree -i empower-rs-utils`: exactly one entry.
+`cargo tree -i empowerops-rs-utils`: exactly one entry.
 
 ## Building
 

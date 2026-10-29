@@ -64,7 +64,7 @@ pub type HandleStore = HandleStoreOf<dyn Any>;
 ///
 /// ```compile_fail
 /// use std::rc::Rc;
-/// use empower_rs_utils::ffi::SendHandleStore;
+/// use empowerops_rs_utils::ffi::SendHandleStore;
 ///
 /// SendHandleStore::new().insert(Rc::new(1));
 /// ```
@@ -73,7 +73,7 @@ pub type HandleStore = HandleStoreOf<dyn Any>;
 ///
 /// ```
 /// use std::sync::Arc;
-/// use empower_rs_utils::ffi::SendHandleStore;
+/// use empowerops_rs_utils::ffi::SendHandleStore;
 ///
 /// SendHandleStore::new().insert(Arc::new(1));
 /// ```

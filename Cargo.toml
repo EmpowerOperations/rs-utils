@@ -3,8 +3,8 @@
 [workspace]
 
 [package]
-name = "empower-rs-utils"
-version = "0.1.1"
+name = "empowerops-rs-utils"
+version = "0.1.2"
 edition = "2024"
 # Lowest toolchain actually checked (`cargo +1.89.0 check --all-targets`); edition 2024 alone
 # would allow 1.85, but nothing below 1.89 has been tried.

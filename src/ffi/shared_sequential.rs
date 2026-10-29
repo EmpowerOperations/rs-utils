@@ -21,7 +21,7 @@ use std::sync::Mutex;
 ///
 /// ```compile_fail
 /// use std::rc::Rc;
-/// use empower_rs_utils::ffi::SharedSequential;
+/// use empowerops_rs_utils::ffi::SharedSequential;
 ///
 /// let _ = SharedSequential::new(|| Rc::new(1));
 /// ```
@@ -30,7 +30,7 @@ use std::sync::Mutex;
 ///
 /// ```
 /// use std::sync::Arc;
-/// use empower_rs_utils::ffi::SharedSequential;
+/// use empowerops_rs_utils::ffi::SharedSequential;
 ///
 /// let shared = SharedSequential::new(|| Arc::new(1));
 /// assert_eq!(shared.execute(|state| **state), 1);

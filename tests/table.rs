@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use empower_rs_utils::table::{Delimiter, Table, TableError, read_table, write_table};
+use empowerops_rs_utils::table::{Delimiter, Table, TableError, read_table, write_table};
 
 fn read(text: &str, delimiter: Option<Delimiter>) -> Result<Table, TableError> {
     read_table(text.as_bytes(), delimiter)
