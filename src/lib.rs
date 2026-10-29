@@ -19,6 +19,8 @@
 
 pub mod report;
 
+pub mod table;
+
 pub mod ffi;
 
 /// Force-resolve `$path` (a compile error if it does not exist), then return just the final

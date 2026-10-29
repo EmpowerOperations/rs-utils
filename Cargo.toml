@@ -4,13 +4,13 @@
 
 [package]
 name = "empower-rs-utils"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 # Lowest toolchain actually checked (`cargo +1.89.0 check --all-targets`); edition 2024 alone
 # would allow 1.85, but nothing below 1.89 has been tried.
 rust-version = "1.89"
 license = "Apache-2.0"
-description = "Shared utilities for EmpowerOps Rust projects: semicolon-CSV reporting and an FFI locking context."
+description = "Shared utilities for EmpowerOps Rust projects: semicolon-CSV reporting, delimited numeric tables and an FFI locking context."
 repository = "https://github.com/EmpowerOperations/rs-utils"
 readme = "README.md"
 keywords = ["ffi", "handles", "thread-affinity", "csv", "report"]
@@ -22,3 +22,5 @@ exclude = [".idea/"]
 crate-type = ["rlib"]
 
 [dependencies]
+# `table`'s splitting and quoting; the module is only the policy over it.
+csv = "1.3"

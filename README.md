@@ -8,12 +8,13 @@ follow.
 
 ## What's in it
 
-Two modules, always both compiled: the crate is too small for cargo features to pay for
+Three modules, always all compiled: the crate is too small for cargo features to pay for
 themselves.
 
 | module | what |
 |---|---|
 | `report` | Semicolon-CSV tables: fixed-width, Excel-friendly, upsert or append. |
+| `table` | Delimited tables of numbers, read and written: exact round trips, decimal commas read where the comma doesn't separate cells. |
 | `ffi` | `HandleStore`, `AbiThreadMarshaller<T>`, `PointerRegistry` — state behind a C boundary. |
 
 ```toml
@@ -31,6 +32,16 @@ Most of the code here today is benchmark-reporting machinery — the semicolon-C
 magnitude-bucketed float formatter, the upsert-or-append reconciliation. It arrived first because
 it was the most obviously duplicated: `format_float` had independently grown **byte-identical** in
 surro and artemis, which is about as clear a signal as de-duplication ever gives you.
+
+### Read anywhere: the `table` module
+
+`report` writes ledgers for people. `table` is for data that moves between programs and
+spreadsheets: a header of names, then rows of numbers, comma, semicolon, tab or whitespace
+separated. Reading guesses the delimiter and an optional header, and accepts a decimal comma
+where the comma isn't the separator, so a sheet exported in a `1,5` locale reads as numbers
+rather than splitting each value in two. Writing always uses a decimal point and the shortest
+text that parses back to the same `f64`, so a table read back is bit for bit what was written.
+The splitting and quoting are the `csv` crate's, the crate's one dependency.
 
 ### Probably most valuable: the `ffi` module
 
